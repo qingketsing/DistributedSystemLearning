@@ -6,7 +6,7 @@ import (
 
 	"6.5840/kvsrv1/rpc"
 	"6.5840/labrpc"
-	"6.5840/tester1"
+	tester "6.5840/tester1"
 )
 
 const Debug = false
@@ -28,12 +28,14 @@ type KVServer struct {
 func MakeKVServer() *KVServer {
 	kv := &KVServer{}
 	// Your code here.
+	kv.data = make(map[string]string)
+	kv.version = make(map[string]rpc.Tversion)
 	return kv
 }
 
 // Get returns the value and version for args.Key, if args.Key
 // exists. Otherwise, Get returns ErrNoKey.
-func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) string {
+func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
 	// Your code here.
 
 	kv.mu.Lock()
@@ -42,10 +44,11 @@ func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) string {
 	if value, exists := kv.data[args.Key]; exists {
 		reply.Value = value
 		reply.Version = kv.version[args.Key]
-		return "success"
+		reply.Err = rpc.OK
+		return
 	}
 
-	return rpc.ErrNoKey
+	reply.Err = rpc.ErrNoKey
 }
 
 // Update the value for a key if args.Version matches the version of
@@ -53,7 +56,29 @@ func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) string {
 // If the key doesn't exist, Put installs the value if the
 // args.Version is 0, and returns ErrNoKey otherwise.
 func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
-	// Your code here.
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	if _, exists := kv.data[args.Key]; exists {
+		if kv.version[args.Key] != args.Version {
+			reply.Err = rpc.ErrVersion
+			return
+		}
+		kv.data[args.Key] = args.Value // 写入新值
+		kv.version[args.Key] = args.Version + 1
+		reply.Err = rpc.OK
+		return
+	} else {
+		if args.Version == 0 {
+			kv.data[args.Key] = args.Value
+			kv.version[args.Key] = 1
+			reply.Err = rpc.OK
+			return
+		} else {
+			reply.Err = rpc.ErrNoKey
+			return
+		}
+	}
 }
 
 // You can ignore Kill() for this lab
