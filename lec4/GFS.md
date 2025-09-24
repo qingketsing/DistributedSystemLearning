@@ -88,3 +88,14 @@ master主要存储三种元数据：文件和chunk的命名空间（namespace）
 所有客户端无论从哪个副本读取，看到的数据都是一样的。
 
 ### 系统交互
+
+#### 租约和变更顺序
+
+在对元数据进行修改时，每个副本都会收到影响而修改，这种修改的一致性是通过租约(Lease)来实现的。这种租约机制是为了最小化master管理负载而设计的。租约的最初超时时长为60s，但是chunk一旦被变更，primary会向master请求延长租约的超时时间，然后接受master的超时授权。这些延长请求和授权请求依赖master与chunkserver间周期性地心跳消息来实现。
+
+具体过程是首先Master向一个副本授予权限，进行变更(或者说授权一个变更的租约)，这个副本被称为Primary，然后primary会为所有的修改提供一个顺序。所有副本都会按照这个顺序来应用变更。
+
+![alt text](image.png)
+
+对于一次write流程:
+1. client向master询问哪个chunkserver持有指定chunk的租约及该chunk的其他副本的位置。如果没有chunkServer持有租约，则master会对一个副本进行授权
