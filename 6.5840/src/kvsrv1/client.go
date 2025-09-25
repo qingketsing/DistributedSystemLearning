@@ -29,14 +29,16 @@ func MakeClerk(clnt *tester.Clnt, server string) kvtest.IKVClerk {
 // arguments. Additionally, reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 	args := rpc.GetArgs{Key: key}
-	reply := rpc.GetReply{}
-	ok := ck.clnt.Call(ck.server, "KVServer.Get", &args, &reply)
-	if ok {
-		if reply.Err == rpc.OK || reply.Err == rpc.ErrNoKey {
-			return reply.Value, reply.Version, reply.Err
+
+	for {
+		reply := rpc.GetReply{}
+		ok := ck.clnt.Call(ck.server, "KVServer.Get", &args, &reply)
+		if ok {
+			if reply.Err == rpc.OK || reply.Err == rpc.ErrNoKey {
+				return reply.Value, reply.Version, reply.Err
+			}
 		}
 	}
-	return "", 0, rpc.ErrMaybe
 }
 
 // Put updates key with value only if the version in the
@@ -78,6 +80,5 @@ func (ck *Clerk) Put(key, value string, version rpc.Tversion) rpc.Err {
 			}
 		}
 		first = false
-		// retry on other errors
 	}
 }
