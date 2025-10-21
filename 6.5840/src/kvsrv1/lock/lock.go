@@ -1,10 +1,12 @@
 package lock
 
 import (
+	"fmt"
+	"math/rand"
 	"time"
 
 	"6.5840/kvsrv1/rpc"
-	"6.5840/kvtest1"
+	kvtest "6.5840/kvtest1"
 )
 
 type Lock struct {
@@ -14,9 +16,9 @@ type Lock struct {
 	// MakeLock().
 	ck kvtest.IKVClerk
 	// You may add code here
-	id       string
-	lockKey  string
-	isLocked bool
+	name    string
+	id      string
+	timeOut time.Duration
 }
 
 // The tester calls MakeLock() and passes in a k/v clerk; your code can
@@ -25,58 +27,56 @@ type Lock struct {
 // Use l as the key to store the "lock state" (you would have to decide
 // precisely what the lock state is).
 func MakeLock(ck kvtest.IKVClerk, l string) *Lock {
-	lk := &Lock{ck: ck}
-	// You may add code here
-	lk.id = kvtest.RandValue(8)
-	lk.lockKey = l
-	lk.isLocked = false
+	lk := &Lock{
+		ck:      ck,
+		name:    l,
+		id:      fmt.Sprintf("%d", rand.Int()),
+		timeOut: 10 * time.Second,
+	}
 	return lk
 }
 
 func (lk *Lock) Acquire() {
-	for {
-		// 1. 读取当前锁状态
-		value, version, err := lk.ck.Get(lk.lockKey)
+	// Attempt to acquire the lock by setting the lock key in the kv store
+	start := time.Now()
+	for time.Since(start) < lk.timeOut {
+		value, version, err := lk.ck.Get(lk.name)
 
-		// 2. 判断是否可以获取锁
-		canAcquire := err == rpc.ErrNoKey || value == "free" || value == lk.id
-
-		if canAcquire {
-			// 3. 尝试原子获取锁
-			putErr := lk.ck.Put(lk.lockKey, lk.id, version)
-			if putErr == rpc.OK {
-				lk.isLocked = true
-				return
-			}
+		if err == rpc.OK && value == lk.id {
+			return
 		}
 
-		time.Sleep(time.Millisecond * 100)
+		if err == rpc.ErrNoKey || (err == rpc.OK && value == "unlock") {
+			var ok rpc.Err
+			if err == rpc.ErrNoKey {
+				ok = lk.ck.Put(lk.name, lk.id, 0)
+			} else {
+				ok = lk.ck.Put(lk.name, lk.id, version)
+			}
+
+			if ok == rpc.OK || ok == rpc.ErrMaybe {
+				verify, _, _ := lk.ck.Get(lk.name)
+				if verify == lk.id {
+					return
+				}
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
 func (lk *Lock) Release() {
-	if !lk.isLocked {
-		return
-	}
-
-	for {
-		// 1. 读取当前锁状态
-		value, version, err := lk.ck.Get(lk.lockKey)
-		if err != rpc.OK && err != rpc.ErrNoKey {
-			continue // 网络错误重试
-		}
-
-		// 2. 检查锁是否被自己持有
-		if value != lk.id {
-			lk.isLocked = false // 锁已经不是自己的了
+	start := time.Now()
+	for time.Since(start) < lk.timeOut {
+		value, version, err := lk.ck.Get(lk.name)
+		if err == rpc.OK && value == lk.id {
+			ok := lk.ck.Put(lk.name, "unlock", version)
+			if ok == rpc.OK || ok == rpc.ErrMaybe || ok == rpc.ErrNoKey {
+				return
+			}
+		} else if err == rpc.ErrNoKey || (err == rpc.OK && value != lk.id) {
 			return
 		}
-
-		// 3. 原子释放锁
-		err = lk.ck.Put(lk.lockKey, "free", version)
-		if err == rpc.OK {
-			lk.isLocked = false
-			return
-		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

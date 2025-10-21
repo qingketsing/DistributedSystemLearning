@@ -28,14 +28,18 @@ func MakeClerk(clnt *tester.Clnt, server string) kvtest.IKVClerk {
 // must match the declared types of the RPC handler function's
 // arguments. Additionally, reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
-	args := rpc.GetArgs{Key: key}
+	// You will have to modify this function.
+	ga := rpc.GetArgs{Key: key}
+	gr := rpc.GetReply{}
 
 	for {
-		reply := rpc.GetReply{}
-		ok := ck.clnt.Call(ck.server, "KVServer.Get", &args, &reply)
+		ok := ck.clnt.Call(ck.server, "KVServer.Get", &ga, &gr)
 		if ok {
-			if reply.Err == rpc.OK || reply.Err == rpc.ErrNoKey {
-				return reply.Value, reply.Version, reply.Err
+			if gr.Err == rpc.ErrNoKey {
+				return "", 0, gr.Err
+			}
+			if gr.Err == rpc.OK {
+				return gr.Value, gr.Version, gr.Err
 			}
 		}
 	}
@@ -59,24 +63,27 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 // must match the declared types of the RPC handler function's
 // arguments. Additionally, reply must be passed as a pointer.
 func (ck *Clerk) Put(key, value string, version rpc.Tversion) rpc.Err {
-	args := rpc.PutArgs{Key: key, Value: value, Version: version}
+	// You will have to modify this function.
+	pa := rpc.PutArgs{Key: key, Value: value, Version: version}
+	pr := rpc.PutReply{}
+
 	first := true
 	for {
-		reply := rpc.PutReply{}
-		ok := ck.clnt.Call(ck.server, "KVServer.Put", &args, &reply)
+		ok := ck.clnt.Call(ck.server, "KVServer.Put", &pa, &pr)
 		if ok {
-			if reply.Err == rpc.OK {
+			if pr.Err == rpc.OK {
 				return rpc.OK
 			}
-			if reply.Err == rpc.ErrVersion {
-				if first {
-					return rpc.ErrVersion
-				} else {
-					return rpc.ErrMaybe
-				}
-			}
-			if reply.Err == rpc.ErrNoKey {
+			if pr.Err == rpc.ErrNoKey {
 				return rpc.ErrNoKey
+			}
+			if pr.Err == rpc.ErrVersion {
+				if !first {
+					return rpc.ErrMaybe
+				} else {
+					return rpc.ErrVersion
+				}
+
 			}
 		}
 		first = false
