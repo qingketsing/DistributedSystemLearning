@@ -8,7 +8,7 @@ import (
 	"6.5840/labgob"
 	"6.5840/labrpc"
 	"6.5840/raftapi"
-	"6.5840/tester1"
+	tester "6.5840/tester1"
 )
 
 type Inc struct {
@@ -57,13 +57,20 @@ func (rs *rsmSrv) DoOp(req any) any {
 	case Inc:
 		rs.mu.Lock()
 		rs.counter += 1
+		n := rs.counter
 		rs.mu.Unlock()
-		return &IncRep{rs.counter}
+		return &IncRep{N: n}
+	case Dec:
+		rs.mu.Lock()
+		rs.counter -= 1
+		n := rs.counter
+		rs.mu.Unlock()
+		return &IncRep{N: n}
 	case Null:
 		return &NullRep{}
 	default:
-		// wrong type! expecting an Inc.
-		log.Fatalf("DoOp should execute only Inc and not %T", req)
+		// wrong type! expecting an Inc/Dec/Null.
+		log.Fatalf("DoOp should execute only Inc/Dec/Null and not %T", req)
 	}
 	return nil
 }

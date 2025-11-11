@@ -1,25 +1,32 @@
 package rsm
 
 import (
+	"math/rand"
 	"sync"
+	"time"
 
 	"6.5840/kvsrv1/rpc"
 	"6.5840/labrpc"
-	"6.5840/raft1"
+	raft "6.5840/raft1"
 	"6.5840/raftapi"
-	"6.5840/tester1"
-
+	tester "6.5840/tester1"
 )
 
 var useRaftStateMachine bool // to plug in another raft besided raft1
-
 
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	ClientID int64
+	SeqNum   int64 // to detect duplicate requests
+	Req      any   // the actual request (Inc, Get, Put, etc.)
 }
 
+type OpReply struct {
+	Value any // can be string, *IncRep, *NullRep, etc.
+	Err   rpc.Err
+}
 
 // A server (i.e., ../server.go) that wants to replicate itself calls
 // MakeRSM and must implement the StateMachine interface.  This
@@ -41,6 +48,12 @@ type RSM struct {
 	maxraftstate int // snapshot if log grows this big
 	sm           StateMachine
 	// Your definitions here.
+	alive            bool // check if server is alive
+	lastAppliedIndex int  // index of last applied command
+	kvStore          map[string]string
+	clientSeq        map[int64]int64      // clientID -> last seqNum
+	notifyChans      map[int]chan OpReply // log index -> chan to notify waiting RPC handler
+
 }
 
 // servers[] contains the ports of the set of
@@ -64,27 +77,111 @@ func MakeRSM(servers []*labrpc.ClientEnd, me int, persister *tester.Persister, m
 		maxraftstate: maxraftstate,
 		applyCh:      make(chan raftapi.ApplyMsg),
 		sm:           sm,
+		alive:        true,
+		notifyChans:  make(map[int]chan OpReply),
+		clientSeq:    make(map[int64]int64),
+		kvStore:      make(map[string]string, 0),
 	}
 	if !useRaftStateMachine {
 		rsm.rf = raft.Make(servers, me, persister, rsm.applyCh)
 	}
+
+	go rsm.applier()
 	return rsm
+}
+
+func (rsm *RSM) applier() {
+	for msg := range rsm.applyCh {
+		if msg.CommandValid {
+			op, ok := msg.Command.(Op)
+			if !ok {
+				continue
+			}
+
+			var opReply OpReply
+			opReply.Err = rpc.OK
+
+			rsm.mu.Lock()
+			lastSeq, seen := rsm.clientSeq[op.ClientID]
+			if seen && op.SeqNum <= lastSeq {
+				// duplicate request - for now, still execute it (proper implementation should cache result)
+				res := rsm.sm.DoOp(op.Req)
+				opReply.Value = res
+			} else {
+				// Pass the actual request (op.Req) to StateMachine, not the Op wrapper
+				res := rsm.sm.DoOp(op.Req)
+				// Store the result directly (can be *IncRep, string, etc.)
+				opReply.Value = res
+				rsm.clientSeq[op.ClientID] = op.SeqNum
+			}
+			rsm.lastAppliedIndex = msg.CommandIndex
+
+			if ch, ok := rsm.notifyChans[msg.CommandIndex]; ok {
+				select {
+				case ch <- opReply:
+				default:
+				}
+				delete(rsm.notifyChans, msg.CommandIndex)
+			}
+			rsm.mu.Unlock()
+		} else if msg.SnapshotValid {
+			rsm.mu.Lock()
+			rsm.sm.Restore(msg.Snapshot)
+			rsm.mu.Unlock()
+		}
+	}
 }
 
 func (rsm *RSM) Raft() raftapi.Raft {
 	return rsm.rf
 }
 
-
 // Submit a command to Raft, and wait for it to be committed.  It
 // should return ErrWrongLeader if client should find new leader and
 // try again.
 func (rsm *RSM) Submit(req any) (rpc.Err, any) {
+	if !rsm.alive {
+		return rpc.ErrWrongLeader, nil
+	}
 
-	// Submit creates an Op structure to run a command through Raft;
-	// for example: op := Op{Me: rsm.me, Id: id, Req: req}, where req
-	// is the argument to Submit and id is a unique id for the op.
+	// Generate unique ID for this operation
+	// Use nano timestamp + random to ensure uniqueness
+	op := Op{
+		ClientID: int64(rsm.me*1000000 + rand.Intn(1000000)), // unique per submit
+		SeqNum:   time.Now().UnixNano(),
+		Req:      req,
+	}
 
-	// your code here
-	return rpc.ErrWrongLeader, nil // i'm dead, try another server.
+	if rsm.rf == nil {
+		return rpc.ErrWrongLeader, nil
+	}
+
+	index, term, isLeader := rsm.rf.Start(op)
+	if !isLeader {
+		return rpc.ErrWrongLeader, nil
+	}
+
+	ch := make(chan OpReply, 1)
+	rsm.mu.Lock()
+	rsm.notifyChans[index] = ch
+	rsm.mu.Unlock()
+
+	select {
+	case reply := <-ch:
+		// Verify we're still leader in the same term
+		rsm.mu.Lock()
+		currentTerm, stillLeader := rsm.rf.GetState()
+		rsm.mu.Unlock()
+
+		if !stillLeader || currentTerm != term {
+			return rpc.ErrWrongLeader, nil
+		}
+
+		return reply.Err, reply.Value
+	case <-time.After(2000 * time.Millisecond): // 增加超时时间
+		rsm.mu.Lock()
+		delete(rsm.notifyChans, index)
+		rsm.mu.Unlock()
+		return rpc.ErrWrongLeader, nil
+	}
 }
